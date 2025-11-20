@@ -11,7 +11,7 @@ echo ""
 
 # Configuration
 REPO_URL="${REPO_URL:-https://github.com/oOHiyoriOo/docker-git-pull.git}"
-INSTALL_DIR="${INSTALL_DIR:-/app/webhook-server}"
+INSTALL_DIR="${INSTALL_DIR:-.}"
 BRANCH="${BRANCH:-main}"
 
 # Colors for output
@@ -105,33 +105,54 @@ else
     print_success "SSH tools found"
 fi
 
-# Create installation directory
-print_info "Setting up installation directory: $INSTALL_DIR"
-if [ -d "$INSTALL_DIR" ]; then
-    print_info "Directory exists. Checking for existing installation..."
+# Setup installation directory
+if [ "$INSTALL_DIR" = "." ]; then
+    print_info "Installing into current directory: $(pwd)"
 
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        print_info "Existing installation found. Updating..."
-        cd "$INSTALL_DIR"
+    if [ -d ".git" ]; then
+        print_info "Existing git repository found. Updating..."
         git fetch origin
         git reset --hard origin/$BRANCH
         print_success "Updated to latest version"
     else
-        print_info "Directory exists but no git repository found. Cleaning and cloning..."
-        $SUDO rm -rf "$INSTALL_DIR"
-        $SUDO mkdir -p "$INSTALL_DIR"
-        git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+        # Check if directory is not empty (excluding hidden files)
+        if [ "$(ls -A | grep -v '^\.')" ]; then
+            print_error "Current directory is not empty and not a git repository!"
+            echo "Please run this script in an empty directory or set INSTALL_DIR to a different location."
+            exit 1
+        fi
+
+        print_info "Cloning repository into current directory..."
+        git clone -b "$BRANCH" "$REPO_URL" .
         print_success "Repository cloned"
     fi
 else
-    print_info "Creating directory and cloning repository..."
-    $SUDO mkdir -p "$INSTALL_DIR"
-    git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
-    print_success "Repository cloned"
-fi
+    print_info "Setting up installation directory: $INSTALL_DIR"
+    if [ -d "$INSTALL_DIR" ]; then
+        print_info "Directory exists. Checking for existing installation..."
 
-# Navigate to installation directory
-cd "$INSTALL_DIR"
+        if [ -d "$INSTALL_DIR/.git" ]; then
+            print_info "Existing installation found. Updating..."
+            cd "$INSTALL_DIR"
+            git fetch origin
+            git reset --hard origin/$BRANCH
+            print_success "Updated to latest version"
+        else
+            print_info "Directory exists but no git repository found. Cleaning and cloning..."
+            $SUDO rm -rf "$INSTALL_DIR"
+            $SUDO mkdir -p "$INSTALL_DIR"
+            git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+            cd "$INSTALL_DIR"
+            print_success "Repository cloned"
+        fi
+    else
+        print_info "Creating directory and cloning repository..."
+        $SUDO mkdir -p "$INSTALL_DIR"
+        git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+        cd "$INSTALL_DIR"
+        print_success "Repository cloned"
+    fi
+fi
 
 # Install dependencies
 print_info "Installing npm dependencies..."
@@ -148,12 +169,21 @@ echo "============================================================"
 echo "Installation Complete!"
 echo "============================================================"
 echo ""
-echo "Installation directory: $INSTALL_DIR"
-echo ""
-echo "Next steps:"
-echo ""
-echo "1. Start the server:"
-echo "   cd $INSTALL_DIR && npm start"
+if [ "$INSTALL_DIR" = "." ]; then
+    echo "Installation directory: $(pwd)"
+    echo ""
+    echo "Next steps:"
+    echo ""
+    echo "1. Start the server:"
+    echo "   npm start"
+else
+    echo "Installation directory: $INSTALL_DIR"
+    echo ""
+    echo "Next steps:"
+    echo ""
+    echo "1. Start the server:"
+    echo "   cd $INSTALL_DIR && npm start"
+fi
 echo ""
 echo "2. The server will:"
 echo "   - Generate SSH keys if needed"
