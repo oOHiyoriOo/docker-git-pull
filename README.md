@@ -21,9 +21,59 @@ A simple Node.js server that handles GitHub webhooks and automatically pulls rep
 
 ## Installation
 
+### Quick Install (Docker - Recommended)
+
+The easiest way to run this server is in a Node.js Docker container using the one-line installer:
+
+```bash
+# Start a Node.js container
+docker run -d --name webhook-server -p 3000:3000 node:18 sleep infinity
+
+# Exec into the container and run the installer
+docker exec -it webhook-server bash -c "curl -fsSL https://raw.githubusercontent.com/oOHiyoriOo/docker-git-pull/main/install.sh | bash"
+
+# Start the server
+docker exec -d webhook-server bash -c "cd /app/webhook-server && npm start"
+
+# View the logs to get SSH key and webhook secret
+docker logs -f webhook-server
+```
+
+Or using `wget`:
+```bash
+docker exec -it webhook-server bash -c "wget -qO- https://raw.githubusercontent.com/oOHiyoriOo/docker-git-pull/main/install.sh | bash"
+```
+
+**What the installer does:**
+- Installs git (using apt/apk/yum depending on the base image)
+- Installs OpenSSH client for SSH key generation
+- Clones this repository to `/app/webhook-server`
+- Installs npm dependencies
+- Creates the repos directory
+
+**Persistent storage (recommended):**
+```bash
+# Create a volume for repositories
+docker volume create webhook-repos
+
+# Run with persistent storage
+docker run -d --name webhook-server \
+  -p 3000:3000 \
+  -v webhook-repos:/app/webhook-server/repos \
+  node:18 sleep infinity
+
+# Install
+docker exec -it webhook-server bash -c "curl -fsSL https://raw.githubusercontent.com/oOHiyoriOo/docker-git-pull/main/install.sh | bash"
+
+# Start
+docker exec -d webhook-server bash -c "cd /app/webhook-server && npm start"
+```
+
+### Manual Installation (Without Docker)
+
 1. Clone this repository:
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/oOHiyoriOo/docker-git-pull.git
 cd docker-git-pull
 ```
 
@@ -35,13 +85,6 @@ npm install
 3. Set up your repositories directory:
 ```bash
 mkdir -p repos
-```
-
-4. Clone the repositories you want to auto-update into the `repos` directory using SSH:
-```bash
-cd repos
-git clone git@github.com:username/repo-name.git
-cd ..
 ```
 
 ## Configuration
@@ -303,6 +346,7 @@ npm run dev
 docker-git-pull/
 ├── server.js                    # Main server file
 ├── package.json                 # Dependencies
+├── install.sh                   # One-line installer script
 ├── webhook-config.json          # Auto-generated secrets (gitignored)
 ├── .env                         # Environment variables (gitignored)
 ├── .env.example                 # Environment template
@@ -336,23 +380,138 @@ pm2 save
 pm2 startup
 ```
 
-### Using Docker
+### Using Docker (Recommended for Production)
 
-Create a `Dockerfile`:
+#### Quick Setup with Install Script
+
+The easiest way to deploy in production is using an existing Node.js container:
+
+```bash
+# Create and start container with persistent storage
+docker volume create webhook-repos
+docker run -d --name webhook-server \
+  -p 3000:3000 \
+  -v webhook-repos:/app/webhook-server/repos \
+  --restart unless-stopped \
+  node:18-slim sleep infinity
+
+# Install and configure
+docker exec -it webhook-server bash -c "curl -fsSL https://raw.githubusercontent.com/oOHiyoriOo/docker-git-pull/main/install.sh | bash"
+
+# Start the server
+docker exec -d webhook-server bash -c "cd /app/webhook-server && npm start"
+
+# Get the SSH key and webhook secret
+docker exec webhook-server cat /root/.ssh/id_ed25519.pub
+docker exec webhook-server cat /app/webhook-server/webhook-config.json
+```
+
+#### With Docker Compose
+
+Create `docker-compose.yml`:
+```yaml
+version: '3.8'
+
+services:
+  webhook-server:
+    image: node:18-slim
+    container_name: webhook-server
+    ports:
+      - "3000:3000"
+    volumes:
+      - webhook-repos:/app/webhook-server/repos
+      - webhook-ssh:/root/.ssh
+    restart: unless-stopped
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y git openssh-client curl &&
+        curl -fsSL https://raw.githubusercontent.com/oOHiyoriOo/docker-git-pull/main/install.sh | bash &&
+        cd /app/webhook-server &&
+        npm start
+      "
+    environment:
+      - PORT=3000
+      - AUTO_CLONE=true
+      - DEFAULT_BRANCH=main
+
+volumes:
+  webhook-repos:
+  webhook-ssh:
+```
+
+Start with:
+```bash
+docker-compose up -d
+docker-compose logs -f  # View SSH key and webhook secret
+```
+
+#### Custom Dockerfile (Alternative)
+
+If you prefer a custom Dockerfile:
 ```dockerfile
-FROM node:18-alpine
+FROM node:18-slim
+
+# Install git and SSH
+RUN apt-get update && \
+    apt-get install -y git openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --production
-COPY . .
+
+# Clone and setup
+RUN git clone https://github.com/oOHiyoriOo/docker-git-pull.git webhook-server && \
+    cd webhook-server && \
+    npm install --production
+
+WORKDIR /app/webhook-server
+
+# Expose port
 EXPOSE 3000
+
+# Start server
 CMD ["npm", "start"]
 ```
 
 Build and run:
 ```bash
-docker build -t github-webhook .
-docker run -d -p 3000:3000 -v /path/to/repos:/app/repos github-webhook
+docker build -t webhook-server .
+docker run -d -p 3000:3000 \
+  -v webhook-repos:/app/webhook-server/repos \
+  --name webhook-server \
+  webhook-server
+```
+
+#### Environment Variables in Docker
+
+Pass environment variables:
+```bash
+docker run -d -p 3000:3000 \
+  -e PORT=8080 \
+  -e AUTO_CLONE=true \
+  -e DEFAULT_BRANCH=main \
+  -e GITHUB_WEBHOOK_SECRET=your-secret \
+  -v webhook-repos:/app/webhook-server/repos \
+  node:18-slim
+```
+
+#### Accessing Container
+
+```bash
+# View logs
+docker logs -f webhook-server
+
+# Get SSH public key
+docker exec webhook-server cat /root/.ssh/id_ed25519.pub
+
+# Get webhook configuration
+docker exec webhook-server cat /app/webhook-server/webhook-config.json
+
+# Execute commands
+docker exec -it webhook-server bash
+
+# Restart server
+docker restart webhook-server
 ```
 
 ## License
