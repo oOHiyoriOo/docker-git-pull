@@ -5,7 +5,9 @@ A simple Node.js server that handles GitHub webhooks and automatically pulls rep
 ## Features
 
 - **GitHub signature validation** - cryptographically secure verification that requests come from GitHub
-- **Automatic git pull** when webhooks are received
+- **Automatic repository cloning** - automatically clones new repositories on first webhook
+- **Automatic git pull** - updates existing repositories when webhooks are received
+- **Smart branch detection** - uses repository's default branch from GitHub or configurable fallback
 - **Automatic SSH key generation** - creates SSH keys if not present
 - **SSH support** for private repositories
 - **Multiple repository support** - handles multiple repos in separate directories
@@ -58,8 +60,10 @@ GITHUB_WEBHOOK_SECRET=your-secret-here
 
 On first run, the server will create `webhook-config.json` with:
 - **githubWebhookSecret**: Secret for validating GitHub webhook signatures (HMAC SHA-256)
+- **defaultBranch**: Default branch to checkout when cloning (default: "main")
+- **autoClone**: Enable/disable automatic repository cloning (default: true)
 
-This secret will be displayed in the console when the server starts and must be configured in your GitHub webhook settings.
+These settings will be displayed in the console when the server starts. The webhook secret must be configured in your GitHub webhook settings.
 
 ## Usage
 
@@ -133,9 +137,27 @@ The secret enables GitHub to sign each webhook request with HMAC SHA-256, which 
 
 ### Repository Setup
 
-For each repository you want to auto-update:
+You have two options for setting up repositories:
 
-1. Clone it into the `repos` directory using SSH:
+#### Option 1: Automatic Cloning (Recommended)
+
+With `autoClone` enabled (default), repositories are automatically cloned when the first webhook is received:
+
+1. Just configure the webhook in GitHub (see below)
+2. Trigger a push event or manually trigger the webhook
+3. The server will automatically clone the repository to `repos/<repo-name>`
+
+The server will:
+- Create the repository directory automatically
+- Clone using the SSH URL from GitHub
+- Checkout the repository's default branch (from GitHub metadata)
+- Use the configured fallback branch if GitHub doesn't specify one
+
+#### Option 2: Manual Cloning
+
+If you prefer manual control or have `autoClone` disabled:
+
+1. Clone repositories into the `repos` directory using SSH:
 ```bash
 cd repos
 git clone git@github.com:username/repo-name.git
@@ -147,16 +169,21 @@ git clone git@github.com:username/repo-name.git
 ssh -T git@github.com
 ```
 
-3. The repository name in the `repos` directory should match the GitHub repository name
+3. The repository name in the `repos` directory must match the GitHub repository name exactly
 
 ## How It Works
 
 1. GitHub sends a webhook POST request when events occur (e.g., push)
 2. Server validates the GitHub signature using HMAC SHA-256 to ensure the request is authentic
-3. Server extracts the repository name from the payload
-4. Server checks if `/repos/<repository-name>` exists
-5. Server runs `git pull origin` in that directory using SSH
-6. Server responds with success/failure status
+3. Server extracts the repository name, SSH URL, and default branch from the payload
+4. Server checks if `/repos/<repository-name>` exists and contains a git repository:
+   - **If directory doesn't exist or is empty** (and `autoClone` is enabled):
+     - Creates the directory
+     - Runs `git clone <ssh-url> .` in that directory
+     - Checks out the default branch from GitHub (or configured fallback)
+   - **If directory exists with .git**:
+     - Runs `git pull origin` to update the repository
+5. Server responds with success/failure status and action taken (cloned or pulled)
 
 ## API Endpoints
 
@@ -206,7 +233,7 @@ This approach follows GitHub's official webhook security recommendations and is 
 
 ## Troubleshooting
 
-### Git pull fails with authentication error
+### Git clone/pull fails with authentication error
 
 Ensure your SSH key is properly configured:
 ```bash
@@ -219,11 +246,35 @@ git remote -v
 # Should show: git@github.com:username/repo.git
 ```
 
-### Webhook returns 404 - Repository not found
+If auto-clone fails with authentication errors:
+1. Ensure your SSH public key is added to your GitHub account
+2. Check that the SSH key has correct permissions (600 for private key)
+3. Verify the repository allows SSH access
 
-1. Check that the repository is cloned in the `repos` directory
+### Auto-clone not working
+
+If repositories aren't being cloned automatically:
+1. Check that `autoClone` is set to `true` in `webhook-config.json`
+2. Verify the webhook payload includes the `ssh_url` field
+3. Ensure the SSH key is properly configured and added to GitHub
+4. Check server logs for specific error messages
+5. Manually trigger a webhook from GitHub to test
+
+### Repository clone fails - directory not empty
+
+If you see "Directory exists but is not empty":
+1. The directory exists but doesn't contain a .git folder
+2. Either clean the directory manually or
+3. Clone the repository manually using SSH
+
+### Webhook returns 404 - Repository not found (with autoClone disabled)
+
+If `autoClone` is disabled:
+1. Manually clone the repository to the `repos` directory
 2. Ensure the directory name matches the GitHub repository name exactly
 3. Verify it's a valid git repository (has `.git` directory)
+
+Or enable `autoClone` in the configuration.
 
 ### Webhook returns 401 - Unauthorized
 
@@ -231,6 +282,13 @@ The GitHub signature validation failed:
 1. Ensure the webhook secret in GitHub matches `githubWebhookSecret` in `webhook-config.json`
 2. Check that the webhook content type is set to `application/json`
 3. Verify the secret was copied correctly (no extra spaces or characters)
+
+### Wrong branch being used
+
+The server uses the default branch from GitHub's webhook payload. To change:
+1. Check the repository's default branch on GitHub
+2. Or set `defaultBranch` in `webhook-config.json` as a fallback
+3. Note: The GitHub payload's default_branch takes precedence over config
 
 ## Development
 

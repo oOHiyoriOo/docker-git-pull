@@ -28,12 +28,16 @@ function loadOrCreateConfig() {
   // Generate new config
   const newConfig = {
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex'),
+    defaultBranch: process.env.DEFAULT_BRANCH || 'main',
+    autoClone: process.env.AUTO_CLONE !== 'false', // Default to true
     createdAt: new Date().toISOString()
   };
 
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
   console.log('Created new webhook configuration at:', CONFIG_FILE);
   console.log('GitHub Webhook Secret:', newConfig.githubWebhookSecret);
+  console.log('Default Branch:', newConfig.defaultBranch);
+  console.log('Auto Clone:', newConfig.autoClone);
 
   return newConfig;
 }
@@ -58,6 +62,22 @@ function validateGitHubSignature(payload, signature) {
   }
 }
 
+// Execute git clone in repository directory
+function gitClone(repoUrl, repoPath, branch) {
+  return new Promise((resolve, reject) => {
+    // Clone into the current directory (repoPath should already exist)
+    const gitCommand = `git clone ${repoUrl} . && git checkout ${branch}`;
+
+    exec(gitCommand, { cwd: repoPath }, (error, stdout, stderr) => {
+      if (error) {
+        reject({ error, stderr });
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
 // Execute git pull in repository directory
 function gitPull(repoPath) {
   return new Promise((resolve, reject) => {
@@ -71,6 +91,13 @@ function gitPull(repoPath) {
       resolve({ stdout, stderr });
     });
   });
+}
+
+// Check if directory is empty (no files or only hidden files except .git)
+function isDirectoryEmpty(dirPath) {
+  const files = fs.readdirSync(dirPath);
+  // Directory is empty if no files, or only has hidden files
+  return files.length === 0 || files.every(file => file.startsWith('.') && file !== '.git');
 }
 
 // Check for SSH key and generate if needed
@@ -175,6 +202,8 @@ app.post('/webhook', async (req, res) => {
 
   // Extract repository information
   const repoName = payload.repository?.name;
+  const repoSshUrl = payload.repository?.ssh_url;
+  const defaultBranch = payload.repository?.default_branch || config.defaultBranch;
   const event = req.headers['x-github-event'];
 
   if (!repoName) {
@@ -186,48 +215,101 @@ app.post('/webhook', async (req, res) => {
 
   // Check if repository directory exists
   const repoPath = path.join(REPOS_DIR, repoName);
-
-  if (!fs.existsSync(repoPath)) {
-    console.log(`Repository directory not found: ${repoPath}`);
-    return res.status(404).json({
-      error: 'Repository directory not found',
-      message: `Please clone the repository to ${repoPath} first`
-    });
-  }
-
-  // Check if it's a git repository
   const gitDir = path.join(repoPath, '.git');
-  if (!fs.existsSync(gitDir)) {
-    console.log(`Not a git repository: ${repoPath}`);
-    return res.status(400).json({
-      error: 'Not a git repository',
-      message: `${repoPath} exists but is not a git repository`
-    });
-  }
 
-  // Perform git pull
-  try {
-    console.log(`Pulling changes for ${repoName}...`);
-    const result = await gitPull(repoPath);
+  // Determine if we need to clone or pull
+  const needsClone = !fs.existsSync(repoPath) || (fs.existsSync(repoPath) && !fs.existsSync(gitDir));
 
-    console.log(`Git pull successful for ${repoName}`);
-    console.log('Output:', result.stdout);
+  if (needsClone) {
+    // Auto-clone if enabled
+    if (!config.autoClone) {
+      console.log(`Repository directory not found and auto-clone is disabled: ${repoPath}`);
+      return res.status(404).json({
+        error: 'Repository directory not found',
+        message: `Auto-clone is disabled. Please clone the repository to ${repoPath} manually or enable autoClone in config`
+      });
+    }
 
-    res.json({
-      success: true,
-      repository: repoName,
-      output: result.stdout,
-      message: 'Repository updated successfully'
-    });
-  } catch (err) {
-    console.error(`Git pull failed for ${repoName}:`, err.error?.message || err.stderr);
+    if (!repoSshUrl) {
+      console.log('No SSH URL in payload for cloning');
+      return res.status(400).json({ error: 'No repository SSH URL found in payload' });
+    }
 
-    res.status(500).json({
-      success: false,
-      repository: repoName,
-      error: err.error?.message || 'Git pull failed',
-      stderr: err.stderr
-    });
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(repoPath)) {
+      console.log(`Creating directory: ${repoPath}`);
+      fs.mkdirSync(repoPath, { recursive: true });
+    } else if (!isDirectoryEmpty(repoPath)) {
+      console.log(`Directory exists but is not empty and not a git repo: ${repoPath}`);
+      return res.status(400).json({
+        error: 'Directory exists but is not empty',
+        message: `${repoPath} exists and contains files but is not a git repository. Please clean it manually.`
+      });
+    }
+
+    // Perform git clone
+    try {
+      console.log(`Cloning repository ${repoName} from ${repoSshUrl} (branch: ${defaultBranch})...`);
+      const result = await gitClone(repoSshUrl, repoPath, defaultBranch);
+
+      console.log(`Git clone successful for ${repoName}`);
+      console.log('Output:', result.stdout);
+
+      res.json({
+        success: true,
+        repository: repoName,
+        action: 'cloned',
+        branch: defaultBranch,
+        output: result.stdout,
+        message: 'Repository cloned successfully'
+      });
+    } catch (err) {
+      console.error(`Git clone failed for ${repoName}:`, err.error?.message || err.stderr);
+
+      // Clean up the directory if clone failed
+      try {
+        if (fs.existsSync(repoPath) && isDirectoryEmpty(repoPath)) {
+          fs.rmSync(repoPath, { recursive: true });
+        }
+      } catch (cleanupErr) {
+        console.error('Failed to clean up directory after failed clone:', cleanupErr.message);
+      }
+
+      res.status(500).json({
+        success: false,
+        repository: repoName,
+        action: 'clone',
+        error: err.error?.message || 'Git clone failed',
+        stderr: err.stderr
+      });
+    }
+  } else {
+    // Directory exists and has .git, perform git pull
+    try {
+      console.log(`Pulling changes for ${repoName}...`);
+      const result = await gitPull(repoPath);
+
+      console.log(`Git pull successful for ${repoName}`);
+      console.log('Output:', result.stdout);
+
+      res.json({
+        success: true,
+        repository: repoName,
+        action: 'pulled',
+        output: result.stdout,
+        message: 'Repository updated successfully'
+      });
+    } catch (err) {
+      console.error(`Git pull failed for ${repoName}:`, err.error?.message || err.stderr);
+
+      res.status(500).json({
+        success: false,
+        repository: repoName,
+        action: 'pull',
+        error: err.error?.message || 'Git pull failed',
+        stderr: err.stderr
+      });
+    }
   }
 });
 
