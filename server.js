@@ -102,6 +102,11 @@ function gitPull(repoPath) {
   return execGitCommand(command, repoPath);
 }
 
+function getCurrentBranch(repoPath) {
+  const command = 'git rev-parse --abbrev-ref HEAD';
+  return execGitCommand(command, repoPath);
+}
+
 // ============================================================================
 // Directory Operations
 // ============================================================================
@@ -273,6 +278,15 @@ function extractRepositoryInfo(payload) {
   };
 }
 
+function extractBranchFromRef(ref) {
+  // GitHub sends refs like "refs/heads/main" or "refs/heads/feature-branch"
+  if (!ref) {
+    return null;
+  }
+  const match = ref.match(/^refs\/heads\/(.+)$/);
+  return match ? match[1] : null;
+}
+
 function validateRepositoryInfo(repoInfo) {
   if (!repoInfo.name) {
     throw new Error('No repository name found');
@@ -387,6 +401,27 @@ async function handleWebhookRequest(req, res) {
   const event = req.headers['x-github-event'];
   console.log(`Received ${event} event for repository: ${repoInfo.name}`);
 
+  // Only process push events
+  if (event !== 'push') {
+    console.log(`Ignoring non-push event: ${event}`);
+    return res.json({
+      success: true,
+      message: `Event '${event}' ignored - only push events are processed`
+    });
+  }
+
+  // Extract branch from the webhook payload
+  const pushBranch = extractBranchFromRef(payload.ref);
+  if (!pushBranch) {
+    console.log('Could not extract branch from webhook payload');
+    return res.status(400).json({
+      error: 'Invalid payload - could not extract branch from ref',
+      ref: payload.ref
+    });
+  }
+
+  console.log(`Push event for branch: ${pushBranch}`);
+
   // Determine repository paths and action
   const { repoPath, gitDir } = getRepositoryPaths(repoInfo.name);
   const { needsClone } = determineRepositoryAction(repoPath, gitDir);
@@ -395,6 +430,15 @@ async function handleWebhookRequest(req, res) {
     let response;
 
     if (needsClone) {
+      // For new clones, check if the push is for the default branch
+      if (pushBranch !== repoInfo.defaultBranch) {
+        console.log(`Ignoring push to branch '${pushBranch}' - repository will be cloned with default branch '${repoInfo.defaultBranch}'`);
+        return res.json({
+          success: true,
+          message: `Push to branch '${pushBranch}' ignored - repository not yet cloned (will clone '${repoInfo.defaultBranch}' on first push to that branch)`
+        });
+      }
+
       // Validate and prepare for clone
       validateClonePrerequisites(repoInfo.sshUrl, repoPath);
       prepareRepositoryDirectory(repoPath);
@@ -407,6 +451,20 @@ async function handleWebhookRequest(req, res) {
         repoInfo.defaultBranch
       );
     } else {
+      // For existing repos, check if the push is for the current branch
+      const currentBranchResult = await getCurrentBranch(repoPath);
+      const currentBranch = currentBranchResult.stdout.trim();
+
+      console.log(`Local repository is on branch: ${currentBranch}`);
+
+      if (pushBranch !== currentBranch) {
+        console.log(`Ignoring push to branch '${pushBranch}' - local repository is on branch '${currentBranch}'`);
+        return res.json({
+          success: true,
+          message: `Push to branch '${pushBranch}' ignored - local repository is on branch '${currentBranch}'`
+        });
+      }
+
       // Perform pull
       response = await handleRepositoryPull(repoInfo.name, repoPath);
     }
