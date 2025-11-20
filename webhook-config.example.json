@@ -1,0 +1,5 @@
+{
+  "urlSecret": "your-random-url-secret-here",
+  "githubWebhookSecret": "your-github-webhook-secret-here",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}
