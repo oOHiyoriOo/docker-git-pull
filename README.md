@@ -4,18 +4,18 @@ A simple Node.js server that handles GitHub webhooks and automatically pulls rep
 
 ## Features
 
-- **Secure webhook endpoints** with random URL secret
-- **GitHub signature validation** to ensure requests come from GitHub
+- **GitHub signature validation** - cryptographically secure verification that requests come from GitHub
 - **Automatic git pull** when webhooks are received
+- **Automatic SSH key generation** - creates SSH keys if not present
 - **SSH support** for private repositories
 - **Multiple repository support** - handles multiple repos in separate directories
-- **Easy configuration** with auto-generated secrets
+- **Easy configuration** with auto-generated webhook secret
 
 ## Prerequisites
 
 - Node.js (v14 or higher)
 - Git
-- SSH key configured for GitHub (for private repositories)
+- SSH key will be automatically generated if not present at `/root/.ssh/`
 
 ## Installation
 
@@ -57,10 +57,9 @@ GITHUB_WEBHOOK_SECRET=your-secret-here
 ### Auto-generated Configuration
 
 On first run, the server will create `webhook-config.json` with:
-- **urlSecret**: Random secret for the webhook URL
-- **githubWebhookSecret**: Secret for validating GitHub signatures
+- **githubWebhookSecret**: Secret for validating GitHub webhook signatures (HMAC SHA-256)
 
-These secrets will be displayed in the console when the server starts.
+This secret will be displayed in the console when the server starts and must be configured in your GitHub webhook settings.
 
 ## Usage
 
@@ -70,35 +69,67 @@ These secrets will be displayed in the console when the server starts.
 npm start
 ```
 
-The server will display:
-- The webhook URL to configure in GitHub
-- The GitHub webhook secret to use
+On startup, the server will:
+1. Check for SSH keys in `/root/.ssh/` (or generate new ones if missing)
+2. Display the SSH public key for GitHub configuration
+3. Show webhook configuration details
 
 Example output:
 ```
+Found existing SSH key: id_ed25519
+
+SSH Public Key:
+------------------------------------------------------------
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIxxx... github-webhook-server
+------------------------------------------------------------
+Add this key to your GitHub account (Settings > SSH Keys)
+
 ============================================================
 GitHub Webhook Git Pull Server
 ============================================================
 Server running on port 3000
 Repositories directory: /home/user/docker-git-pull/repos
 
-Webhook URL: http://localhost:3000/webhook/abc123...
-GitHub Webhook Secret: xyz789...
+Webhook Configuration:
+  Webhook URL: http://localhost:3000/webhook
+  GitHub Webhook Secret: xyz789...
 
-Configure this URL in your GitHub repository webhook settings
+SSH Public Key (add to GitHub):
+------------------------------------------------------------
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIxxx... github-webhook-server
+------------------------------------------------------------
+
+Next Steps:
+1. Add the SSH public key above to GitHub:
+   https://github.com/settings/ssh/new
+2. Clone repositories to: /home/user/docker-git-pull/repos
+3. Configure webhook URL and secret in GitHub settings
 ============================================================
 ```
+
+### Add SSH Key to GitHub
+
+The server will display your SSH public key on every startup. To add it to GitHub:
+
+1. Copy the SSH public key from the server output
+2. Go to [GitHub SSH Settings](https://github.com/settings/ssh/new)
+3. Click "New SSH key"
+4. Give it a title (e.g., "Webhook Server")
+5. Paste the public key
+6. Click "Add SSH key"
 
 ### Configure GitHub Webhook
 
 1. Go to your GitHub repository
 2. Navigate to **Settings** → **Webhooks** → **Add webhook**
 3. Configure:
-   - **Payload URL**: The webhook URL from server output (e.g., `http://your-server.com:3000/webhook/abc123...`)
+   - **Payload URL**: The webhook URL from server output (e.g., `http://your-server.com:3000/webhook`)
    - **Content type**: `application/json`
-   - **Secret**: The `githubWebhookSecret` from server output
+   - **Secret**: The `githubWebhookSecret` from server output (this is required for security)
    - **Events**: Choose "Just the push event" or customize as needed
 4. Click **Add webhook**
+
+The secret enables GitHub to sign each webhook request with HMAC SHA-256, which the server validates to ensure the request is authentic.
 
 ### Repository Setup
 
@@ -121,16 +152,15 @@ ssh -T git@github.com
 ## How It Works
 
 1. GitHub sends a webhook POST request when events occur (e.g., push)
-2. Server validates the URL secret in the path
-3. Server validates the GitHub signature using HMAC SHA-256
-4. Server extracts the repository name from the payload
-5. Server checks if `/repos/<repository-name>` exists
-6. Server runs `git pull origin` in that directory using SSH
-7. Server responds with success/failure status
+2. Server validates the GitHub signature using HMAC SHA-256 to ensure the request is authentic
+3. Server extracts the repository name from the payload
+4. Server checks if `/repos/<repository-name>` exists
+5. Server runs `git pull origin` in that directory using SSH
+6. Server responds with success/failure status
 
 ## API Endpoints
 
-### POST `/webhook/:urlSecret`
+### POST `/webhook`
 Receives GitHub webhook events and triggers git pull.
 
 **Headers:**
@@ -164,10 +194,15 @@ Server information endpoint.
 
 ## Security Features
 
-1. **URL Secret**: Random secret in the webhook URL path prevents unauthorized access
-2. **Signature Validation**: Validates GitHub HMAC signature using SHA-256
-3. **Timing-safe Comparison**: Uses `crypto.timingSafeEqual` to prevent timing attacks
-4. **Path Validation**: Only pulls repositories that exist in the configured directory
+1. **GitHub Signature Validation**: All webhook requests must include a valid HMAC SHA-256 signature
+   - GitHub signs each request using the shared webhook secret
+   - Server validates the signature to ensure the request is from GitHub
+   - Requests without valid signatures are rejected with 401 Unauthorized
+2. **Timing-safe Comparison**: Uses `crypto.timingSafeEqual` to prevent timing attacks
+3. **Path Validation**: Only pulls repositories that exist in the configured directory
+4. **Cryptographically Secure**: HMAC SHA-256 signature validation cannot be forged without the secret
+
+This approach follows GitHub's official webhook security recommendations and is the industry standard for webhook authentication.
 
 ## Troubleshooting
 
@@ -195,12 +230,7 @@ git remote -v
 The GitHub signature validation failed:
 1. Ensure the webhook secret in GitHub matches `githubWebhookSecret` in `webhook-config.json`
 2. Check that the webhook content type is set to `application/json`
-
-### Webhook returns 403 - Forbidden
-
-The URL secret is incorrect:
-1. Verify you're using the correct webhook URL from the server output
-2. Check `webhook-config.json` for the current `urlSecret`
+3. Verify the secret was copied correctly (no extra spaces or characters)
 
 ## Development
 

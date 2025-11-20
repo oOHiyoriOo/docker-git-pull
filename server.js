@@ -27,14 +27,12 @@ function loadOrCreateConfig() {
 
   // Generate new config
   const newConfig = {
-    urlSecret: crypto.randomBytes(32).toString('hex'),
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex'),
     createdAt: new Date().toISOString()
   };
 
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
   console.log('Created new webhook configuration at:', CONFIG_FILE);
-  console.log('URL Secret:', newConfig.urlSecret);
   console.log('GitHub Webhook Secret:', newConfig.githubWebhookSecret);
 
   return newConfig;
@@ -75,27 +73,95 @@ function gitPull(repoPath) {
   });
 }
 
+// Check for SSH key and generate if needed
+function checkAndSetupSSHKey() {
+  return new Promise((resolve, reject) => {
+    const sshDir = '/root/.ssh';
+    const keyTypes = [
+      { private: 'id_ed25519', public: 'id_ed25519.pub' },
+      { private: 'id_rsa', public: 'id_rsa.pub' }
+    ];
+
+    // Check if .ssh directory exists
+    if (!fs.existsSync(sshDir)) {
+      console.log('SSH directory not found, creating:', sshDir);
+      fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+    }
+
+    // Check for existing SSH keys
+    let existingKey = null;
+    for (const keyType of keyTypes) {
+      const privateKeyPath = path.join(sshDir, keyType.private);
+      const publicKeyPath = path.join(sshDir, keyType.public);
+
+      if (fs.existsSync(privateKeyPath) && fs.existsSync(publicKeyPath)) {
+        existingKey = { type: keyType.private, publicPath: publicKeyPath };
+        break;
+      }
+    }
+
+    if (existingKey) {
+      // SSH key already exists
+      console.log('Found existing SSH key:', existingKey.type);
+      const publicKey = fs.readFileSync(existingKey.publicPath, 'utf8').trim();
+      console.log('');
+      console.log('SSH Public Key:');
+      console.log('-'.repeat(60));
+      console.log(publicKey);
+      console.log('-'.repeat(60));
+      console.log('Add this key to your GitHub account (Settings > SSH Keys)');
+      console.log('');
+      resolve({ exists: true, publicKey });
+    } else {
+      // No SSH key found, generate new one
+      console.log('No SSH key found, generating new ed25519 key...');
+      const privateKeyPath = path.join(sshDir, 'id_ed25519');
+      const publicKeyPath = path.join(sshDir, 'id_ed25519.pub');
+
+      const sshKeygenCommand = `ssh-keygen -t ed25519 -f ${privateKeyPath} -N "" -C "github-webhook-server"`;
+
+      exec(sshKeygenCommand, (error, stdout, stderr) => {
+        if (error) {
+          console.error('Failed to generate SSH key:', error.message);
+          reject(error);
+          return;
+        }
+
+        console.log('SSH key generated successfully!');
+
+        // Set correct permissions
+        fs.chmodSync(privateKeyPath, 0o600);
+        fs.chmodSync(publicKeyPath, 0o644);
+
+        const publicKey = fs.readFileSync(publicKeyPath, 'utf8').trim();
+        console.log('');
+        console.log('NEW SSH Public Key Generated:');
+        console.log('='.repeat(60));
+        console.log(publicKey);
+        console.log('='.repeat(60));
+        console.log('IMPORTANT: Add this key to your GitHub account!');
+        console.log('Go to: https://github.com/settings/ssh/new');
+        console.log('');
+
+        resolve({ exists: false, publicKey });
+      });
+    }
+  });
+}
+
 // Ensure repos directory exists
 if (!fs.existsSync(REPOS_DIR)) {
   fs.mkdirSync(REPOS_DIR, { recursive: true });
   console.log('Created repos directory at:', REPOS_DIR);
 }
 
-// GitHub webhook endpoint with URL secret
-app.post('/webhook/:urlSecret', async (req, res) => {
-  const { urlSecret } = req.params;
-
-  // Validate URL secret
-  if (urlSecret !== config.urlSecret) {
-    console.log('Invalid URL secret attempt');
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-
+// GitHub webhook endpoint
+app.post('/webhook', async (req, res) => {
   // Validate GitHub signature
   const signature = req.headers['x-hub-signature-256'];
   if (!validateGitHubSignature(req.body, signature)) {
-    console.log('Invalid GitHub signature');
-    return res.status(401).json({ error: 'Unauthorized - Invalid signature' });
+    console.log('Invalid GitHub signature - request rejected');
+    return res.status(401).json({ error: 'Unauthorized - Invalid GitHub signature' });
   }
 
   // Parse the payload
@@ -179,7 +245,7 @@ app.get('/', (req, res) => {
   res.json({
     message: 'GitHub Webhook Git Pull Server',
     endpoints: {
-      webhook: '/webhook/:urlSecret (POST)',
+      webhook: '/webhook (POST)',
       health: '/health (GET)'
     },
     reposDir: REPOS_DIR
@@ -187,16 +253,39 @@ app.get('/', (req, res) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
-  console.log('='.repeat(60));
-  console.log('GitHub Webhook Git Pull Server');
-  console.log('='.repeat(60));
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Repositories directory: ${REPOS_DIR}`);
-  console.log('');
-  console.log('Webhook URL:', `http://localhost:${PORT}/webhook/${config.urlSecret}`);
-  console.log('GitHub Webhook Secret:', config.githubWebhookSecret);
-  console.log('');
-  console.log('Configure this URL in your GitHub repository webhook settings');
-  console.log('='.repeat(60));
-});
+async function startServer() {
+  try {
+    // Check and setup SSH key
+    const sshKeyInfo = await checkAndSetupSSHKey();
+
+    // Start listening
+    app.listen(PORT, () => {
+      console.log('='.repeat(60));
+      console.log('GitHub Webhook Git Pull Server');
+      console.log('='.repeat(60));
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Repositories directory: ${REPOS_DIR}`);
+      console.log('');
+      console.log('Webhook Configuration:');
+      console.log('  Webhook URL:', `http://localhost:${PORT}/webhook`);
+      console.log('  GitHub Webhook Secret:', config.githubWebhookSecret);
+      console.log('');
+      console.log('SSH Public Key (add to GitHub):');
+      console.log('-'.repeat(60));
+      console.log(sshKeyInfo.publicKey);
+      console.log('-'.repeat(60));
+      console.log('');
+      console.log('Next Steps:');
+      console.log('1. Add the SSH public key above to GitHub:');
+      console.log('   https://github.com/settings/ssh/new');
+      console.log('2. Clone repositories to:', REPOS_DIR);
+      console.log('3. Configure webhook URL and secret in GitHub settings');
+      console.log('='.repeat(60));
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
