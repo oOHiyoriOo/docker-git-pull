@@ -1,0 +1,6 @@
+{
+  "githubWebhookSecret": "your-github-webhook-secret-here",
+  "defaultBranch": "main",
+  "autoClone": true,
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}
