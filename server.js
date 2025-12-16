@@ -356,7 +356,9 @@ async function handleRepositoryClone(repoName, repoSshUrl, repoPath, defaultBran
   } catch (err) {
     console.error(`Git clone failed for ${repoName}:`, err.error?.message || err.stderr);
     cleanupDirectory(repoPath);
-    throw buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr);
+    const errorResponse = buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr);
+    errorResponse.status = 500;
+    throw errorResponse;
   }
 }
 
@@ -371,7 +373,9 @@ async function handleRepositoryPull(repoName, repoPath) {
     return buildSuccessResponse(repoName, 'pulled', result.stdout);
   } catch (err) {
     console.error(`Git pull failed for ${repoName}:`, err.error?.message || err.stderr);
-    throw buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr);
+    const errorResponse = buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr);
+    errorResponse.status = 500;
+    throw errorResponse;
   }
 }
 
@@ -452,8 +456,20 @@ async function handleWebhookRequest(req, res) {
       );
     } else {
       // For existing repos, check if the push is for the current branch
-      const currentBranchResult = await getCurrentBranch(repoPath);
-      const currentBranch = currentBranchResult.stdout.trim();
+      let currentBranch;
+      try {
+        const currentBranchResult = await getCurrentBranch(repoPath);
+        currentBranch = currentBranchResult.stdout.trim();
+      } catch (err) {
+        console.error(`Failed to get current branch for ${repoInfo.name}:`, err.error?.message || err.stderr);
+        return res.status(500).json({
+          success: false,
+          repository: repoInfo.name,
+          error: 'Failed to get current branch',
+          details: err.error?.message || err.stderr,
+          message: 'Could not determine the current branch of the local repository. The repository may be corrupted.'
+        });
+      }
 
       console.log(`Local repository is on branch: ${currentBranch}`);
 
