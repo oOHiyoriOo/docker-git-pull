@@ -243,7 +243,7 @@ function buildSuccessResponse(repoName, action, output, branch = null) {
   return response;
 }
 
-function buildErrorResponse(repoName, action, error, stderr = null) {
+function buildErrorResponse(repoName, action, error, stderr = null, status = null) {
   const response = {
     success: false,
     repository: repoName,
@@ -253,6 +253,10 @@ function buildErrorResponse(repoName, action, error, stderr = null) {
 
   if (stderr) {
     response.stderr = stderr;
+  }
+
+  if (status) {
+    response.status = status;
   }
 
   return response;
@@ -356,9 +360,7 @@ async function handleRepositoryClone(repoName, repoSshUrl, repoPath, defaultBran
   } catch (err) {
     console.error(`Git clone failed for ${repoName}:`, err.error?.message || err.stderr);
     cleanupDirectory(repoPath);
-    const errorResponse = buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr);
-    errorResponse.status = 500;
-    throw errorResponse;
+    throw buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr, 500);
   }
 }
 
@@ -373,9 +375,7 @@ async function handleRepositoryPull(repoName, repoPath) {
     return buildSuccessResponse(repoName, 'pulled', result.stdout);
   } catch (err) {
     console.error(`Git pull failed for ${repoName}:`, err.error?.message || err.stderr);
-    const errorResponse = buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr);
-    errorResponse.status = 500;
-    throw errorResponse;
+    throw buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr, 500);
   }
 }
 
