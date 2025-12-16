@@ -243,7 +243,7 @@ function buildSuccessResponse(repoName, action, output, branch = null) {
   return response;
 }
 
-function buildErrorResponse(repoName, action, error, stderr = null) {
+function buildErrorResponse(repoName, action, error, stderr = null, status = null) {
   const response = {
     success: false,
     repository: repoName,
@@ -253,6 +253,10 @@ function buildErrorResponse(repoName, action, error, stderr = null) {
 
   if (stderr) {
     response.stderr = stderr;
+  }
+
+  if (status) {
+    response.status = status;
   }
 
   return response;
@@ -356,7 +360,7 @@ async function handleRepositoryClone(repoName, repoSshUrl, repoPath, defaultBran
   } catch (err) {
     console.error(`Git clone failed for ${repoName}:`, err.error?.message || err.stderr);
     cleanupDirectory(repoPath);
-    throw buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr);
+    throw buildErrorResponse(repoName, 'clone', err.error?.message || 'Git clone failed', err.stderr, 500);
   }
 }
 
@@ -371,7 +375,7 @@ async function handleRepositoryPull(repoName, repoPath) {
     return buildSuccessResponse(repoName, 'pulled', result.stdout);
   } catch (err) {
     console.error(`Git pull failed for ${repoName}:`, err.error?.message || err.stderr);
-    throw buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr);
+    throw buildErrorResponse(repoName, 'pull', err.error?.message || 'Git pull failed', err.stderr, 500);
   }
 }
 
@@ -452,8 +456,20 @@ async function handleWebhookRequest(req, res) {
       );
     } else {
       // For existing repos, check if the push is for the current branch
-      const currentBranchResult = await getCurrentBranch(repoPath);
-      const currentBranch = currentBranchResult.stdout.trim();
+      let currentBranch;
+      try {
+        const currentBranchResult = await getCurrentBranch(repoPath);
+        currentBranch = currentBranchResult.stdout.trim();
+      } catch (err) {
+        console.error(`Failed to get current branch for ${repoInfo.name}:`, err.error?.message || err.stderr);
+        return res.status(500).json({
+          success: false,
+          repository: repoInfo.name,
+          error: 'Failed to get current branch',
+          details: err.error?.message || err.stderr,
+          message: 'Could not determine the current branch of the local repository. The repository may be corrupted.'
+        });
+      }
 
       console.log(`Local repository is on branch: ${currentBranch}`);
 

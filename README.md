@@ -228,6 +228,25 @@ ssh -T git@github.com
      - Runs `git pull origin` to update the repository
 5. Server responds with success/failure status and action taken (cloned or pulled)
 
+### Pull Request Handling
+
+When a pull request is merged into a branch (e.g., main), GitHub sends a **push event** to that branch, not a pull_request event. The server automatically handles these merge events:
+
+1. **PR Merge Detection**: When a PR is merged, GitHub sends a push event with:
+   - `ref`: The target branch (e.g., `refs/heads/main`)
+   - `head_commit.message`: Often starts with "Merge pull request #..."
+   
+2. **Automatic Updates**: The server treats PR merges the same as regular pushes:
+   - Extracts the branch from the `ref` field
+   - Checks if the local repository is on the same branch
+   - Runs `git pull` to fetch the merged changes
+   
+3. **Branch Filtering**: The server only pulls changes when:
+   - The push is to the branch the local repository is currently on
+   - For example, if local repo is on `main`, only pushes to `main` trigger a pull
+   
+This means you don't need to configure anything special for PR merges - they work automatically as long as you have the push event enabled in your webhook configuration.
+
 ## API Endpoints
 
 ### POST `/webhook`
@@ -332,6 +351,33 @@ The server uses the default branch from GitHub's webhook payload. To change:
 1. Check the repository's default branch on GitHub
 2. Or set `defaultBranch` in `webhook-config.json` as a fallback
 3. Note: The GitHub payload's default_branch takes precedence over config
+
+### Webhook returns 500 - Internal Server Error
+
+If you receive a 500 error from the webhook:
+
+1. **Check server logs** for detailed error messages. The server logs will show:
+   - Git command failures
+   - Repository access issues
+   - File system errors
+
+2. **Common causes**:
+   - Repository directory exists but is corrupted or not a valid git repository
+   - Git commands fail due to permission issues
+   - Git pull fails due to merge conflicts or uncommitted changes
+   - Network issues preventing git operations
+
+3. **Solutions**:
+   - Check that the repository directory is a valid git repository: `cd repos/<repo-name> && git status`
+   - Verify file permissions on the repository directory
+   - If the repository is corrupted, remove the directory and let it auto-clone again
+   - Check for uncommitted changes or merge conflicts that might block pulls
+   - Review server logs for specific git error messages
+
+4. **Enhanced error reporting**: The latest version provides detailed error information in the response, including:
+   - The specific git command that failed
+   - Git's stderr output
+   - Suggestions for resolution
 
 ## Development
 
